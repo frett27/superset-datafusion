@@ -1,15 +1,35 @@
 #!/bin/bash
 
 # Setup Superset with DataFusion integration
+# you must have a mysql database running on the localhost:3306
+# with the username "superset" and the password "superset_password" (for tests purposes)
 
 echo "Setting up Superset with DataFusion integration..."
 
 # Activate virtual environment
+python3 -m venv .venv
 source .venv/bin/activate
 
-# Install Superset
+# Install Superset from source
 echo "Installing Superset..."
-pip install apache-superset==4.0.1
+cd superset
+git checkout -f 4.0.1
+cd superset-frontend
+nvm use 23
+npm ci
+npm build
+cd ..
+cd ..
+
+# install from source in venv
+pip install -e .
+pip install -e superset
+pip install -e python/superset_datafusion
+pip install -e python/sqlalchemy_datafusion_pkg
+
+
+# install from binary
+## pip install apache-superset==4.0.1
 
 # Install additional dependencies
 echo "Installing additional dependencies..."

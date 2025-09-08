@@ -3,3 +3,13 @@
 This project permit to use Datafusion in superset
 Leveraging the usage of parquet file for graphing
  
+
+
+## Building from source
+
+
+    git clone --recursive https://github.com/frett27/superset-datafusion
+
+
+    ./setup_superset_datafusion.sh
+    
