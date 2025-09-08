@@ -1,0 +1,9 @@
+setup.py
+sqlalchemy_datafusion/__init__.py
+sqlalchemy_datafusion/dialect.py
+sqlalchemy_datafusion.egg-info/PKG-INFO
+sqlalchemy_datafusion.egg-info/SOURCES.txt
+sqlalchemy_datafusion.egg-info/dependency_links.txt
+sqlalchemy_datafusion.egg-info/entry_points.txt
+sqlalchemy_datafusion.egg-info/requires.txt
+sqlalchemy_datafusion.egg-info/top_level.txt

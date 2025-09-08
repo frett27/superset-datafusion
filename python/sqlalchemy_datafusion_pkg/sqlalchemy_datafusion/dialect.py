@@ -1,0 +1,165 @@
+from sqlalchemy.engine.default import DefaultDialect
+from sqlalchemy import types as sqltypes
+import datafusion_dbapi as dfapi
+import os
+
+class DataFusionDialect(DefaultDialect):
+    name = "datafusion"
+    driver = "datafusion_dbapi"
+    supports_statement_cache = False
+
+    @classmethod
+    def dbapi(cls):
+        return dfapi
+
+    def create_connect_args(self, url):
+        return ([], {})
+
+    def do_connect(self, *cargs, **cparams):
+        # Create DataFusion connection
+        conn = dfapi.connect()
+        
+        return conn
+
+    def do_execute(self, cursor, statement, parameters, context=None):
+        # DataFusion DB-API doesn't support parameter binding
+        # So we ignore parameters and just execute the statement
+        cursor.execute(statement)
+
+    def do_executemany(self, cursor, statement, parameters, context=None):
+        # DataFusion DB-API doesn't support parameter binding
+        # So we ignore parameters and just execute the statement
+        cursor.execute(statement)
+
+    def get_schema_names(self, connection, **kw):
+        """Return list of schema names"""
+        return ["public"]
+
+    def get_table_names(self, connection, schema=None, **kw):
+        """Return list of table names"""
+        try:
+            # Get the raw DataFusion connection
+            raw_conn = connection.connection
+            if hasattr(raw_conn, 'connection'):
+                raw_conn = raw_conn.connection
+            
+            # Execute SHOW TABLES
+            cursor = raw_conn.cursor()
+            cursor.execute("SHOW TABLES")
+            results = cursor.fetchall()
+            
+            # Extract table names (SHOW TABLES returns: catalog, schema, table_name, table_type)
+            table_names = []
+            for row in results:
+                # ignore all rows that does not have the "public" table_schema (2nd column in the row)
+                if len(row) >= 3 and row[1] == "public":
+                    table_name = row[2]  # table_name is the 3rd column
+                    table_type = row[3] if len(row) > 3 else "BASE TABLE"
+                    # Only include actual data tables, not system views
+                    if table_type == "BASE TABLE":
+                        table_names.append(table_name)
+            
+            cursor.close()
+            return table_names
+            
+        except Exception as e:
+            return []
+
+    def get_view_names(self, connection, schema=None, **kw):
+        """Return list of view names - DataFusion doesn't support views, so return empty list"""
+        # DataFusion doesn't support views, so we return an empty list
+        # This prevents the NotImplementedError that was causing the 422 error
+        return []
+
+    def get_columns(self, connection, table_name, schema=None, **kw):
+        """Return list of column information"""
+        try:
+            # Get the raw DataFusion connection
+            raw_conn = connection.connection
+            if hasattr(raw_conn, 'connection'):
+                raw_conn = raw_conn.connection
+            
+            # Execute DESCRIBE
+            cursor = raw_conn.cursor()
+            cursor.execute(f"DESCRIBE {table_name}")
+            results = cursor.fetchall()
+            
+            # Convert to SQLAlchemy column format
+            columns = []
+            for row in results:
+                if len(row) >= 2:
+                    column_name = row[0]  # column_name
+                    column_type = row[1]   # data_type
+                    
+                    # Map DataFusion types to SQLAlchemy types
+                    sqlalchemy_type = self._get_sqlalchemy_type(column_type)
+                    
+                    columns.append({
+                        "name": column_name,
+                        "type": sqlalchemy_type,
+                        "nullable": True,  # Assume nullable for now
+                        "default": None,
+                        "autoincrement": False,
+                    })
+            
+            cursor.close()
+            return columns
+            
+        except Exception as e:
+            return []
+
+    def get_table_comment(self, connection, table_name, schema=None, **kw):
+        """Return table comment (DataFusion doesn't support comments, so return empty)"""
+        return {"text": ""}
+
+    def get_indexes(self, connection, table_name, schema=None, **kw):
+        """Return list of indexes (DataFusion doesn't support indexes, so return empty)"""
+        return []
+
+    def get_foreign_keys(self, connection, table_name, schema=None, **kw):
+        """Return list of foreign keys (DataFusion doesn't support foreign keys, so return empty)"""
+        return []
+
+    def get_check_constraints(self, connection, table_name, schema=None, **kw):
+        """Return list of check constraints (DataFusion doesn't support constraints, so return empty)"""
+        return []
+
+    def get_unique_constraints(self, connection, table_name, schema=None, **kw):
+        """Return list of unique constraints (DataFusion doesn't support constraints, so return empty)"""
+        return []
+
+    def get_pk_constraint(self, connection, table_name, schema=None, **kw):
+        """Return primary key constraint (DataFusion doesn't support primary keys, so return empty)"""
+        return {"constrained_columns": [], "name": None}
+
+    def _get_sqlalchemy_type(self, datafusion_type):
+        """Convert DataFusion type to SQLAlchemy type"""
+        type_mapping = {
+            "Utf8": sqltypes.VARCHAR,
+            "LargeUtf8": sqltypes.VARCHAR,
+            "Int8": sqltypes.SMALLINT,
+            "Int16": sqltypes.SMALLINT,
+            "Int32": sqltypes.INTEGER,
+            "Int64": sqltypes.BIGINT,
+            "UInt8": sqltypes.SMALLINT,
+            "UInt16": sqltypes.SMALLINT,
+            "UInt32": sqltypes.INTEGER,
+            "UInt64": sqltypes.BIGINT,
+            "Float32": sqltypes.FLOAT,
+            "Float64": sqltypes.FLOAT,
+            "Boolean": sqltypes.BOOLEAN,
+            "Date32": sqltypes.DATE,
+            "Timestamp": sqltypes.TIMESTAMP,
+        }
+        
+        return type_mapping.get(datafusion_type, sqltypes.VARCHAR)
+
+    ischema_names = {
+        "INTEGER": sqltypes.INTEGER,
+        "BIGINT": sqltypes.BIGINT,
+        "FLOAT": sqltypes.FLOAT,
+        "DOUBLE": sqltypes.Float,
+        "BOOLEAN": sqltypes.BOOLEAN,
+        "VARCHAR": sqltypes.VARCHAR,
+        "TEXT": sqltypes.TEXT,
+    }

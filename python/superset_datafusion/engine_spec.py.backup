@@ -1,0 +1,65 @@
+from superset.db_engine_specs.base import BaseEngineSpec
+from superset.db_engine_specs.exceptions import SupersetDBAPIError
+
+class DataFusionEngineSpec(BaseEngineSpec):
+    """DataFusion engine specification for Superset"""
+    
+    engine = "datafusion"
+    engine_name = "Apache DataFusion"
+    drivers = {"datafusion_dbapi": "datafusion_dbapi"}
+    default_driver = "datafusion_dbapi"
+    
+    # SQLAlchemy URI format
+    _time_grain_expressions = {
+        None: "{col}",
+        "PT1S": "DATE_TRUNC('second', {col})",
+        "PT1M": "DATE_TRUNC('minute', {col})",
+        "PT1H": "DATE_TRUNC('hour', {col})",
+        "P1D": "DATE_TRUNC('day', {col})",
+        "P1W": "DATE_TRUNC('week', {col})",
+        "P1M": "DATE_TRUNC('month', {col})",
+        "P1Y": "DATE_TRUNC('year', {col})",
+    }
+    
+    # Allow DML operations (needed for SHOW TABLES, DESCRIBE, etc.)
+    allow_dml = True
+    
+    @classmethod
+    def get_schema_names(cls, inspector):
+        """Get schema names using SQLAlchemy inspector"""
+        try:
+            # Use the SQLAlchemy inspector which will use our dialect
+            return inspector.get_schema_names()
+        except Exception as e:
+            # Fallback: return default schema
+            return ["public"]
+    
+    @classmethod
+    def get_table_names(cls, database, inspector, schema):
+        """Get table names using SQLAlchemy inspector"""
+        try:
+            # Use the SQLAlchemy inspector which will use our dialect
+            return inspector.get_table_names(schema=schema)
+        except Exception as e:
+            # Fallback: return empty list
+            return []
+    
+    @classmethod
+    def get_columns(cls, database, inspector, table_name, schema):
+        """Get column information using SQLAlchemy inspector"""
+        try:
+            # Use the SQLAlchemy inspector which will use our dialect
+            return inspector.get_columns(table_name, schema=schema)
+        except Exception as e:
+            # Fallback: return empty list
+            return []
+    
+    @classmethod
+    def convert_dttm(cls, target_type, dttm, db_extra=None):
+        """Convert datetime to target type"""
+        return f"CAST('{dttm}' AS {target_type})"
+    
+    @classmethod
+    def epoch_to_dttm(cls):
+        """Convert epoch to datetime"""
+        return "CAST({col} AS TIMESTAMP)"

@@ -1,0 +1,7 @@
+setup.py
+superset_datafusion.egg-info/PKG-INFO
+superset_datafusion.egg-info/SOURCES.txt
+superset_datafusion.egg-info/dependency_links.txt
+superset_datafusion.egg-info/entry_points.txt
+superset_datafusion.egg-info/requires.txt
+superset_datafusion.egg-info/top_level.txt

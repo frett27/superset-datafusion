@@ -1,0 +1,237 @@
+use std::sync::Arc;
+
+use datafusion::prelude::*;
+use datafusion::arrow::array::*;
+use datafusion::arrow::datatypes::DataType;
+use datafusion::arrow::record_batch::RecordBatch;
+use pyo3::exceptions::PyException;
+use pyo3::prelude::*;
+use pyo3::types::PyTuple;
+use tokio::runtime::Runtime;
+
+fn to_pyerr<E: std::fmt::Display>(e: E) -> PyErr {
+    PyException::new_err(e.to_string())
+}
+
+/// Convert Arrow DataType to a crude DB-API "type_code" (int).
+fn arrow_dtype_to_dbapi_typecode(dt: &DataType) -> i32 {
+    match dt {
+        DataType::Int64 | DataType::UInt64 => 1,
+        DataType::Int32 | DataType::UInt32 => 2,
+        DataType::Float64 => 3,
+        DataType::Float32 => 4,
+        DataType::Boolean => 5,
+        DataType::Utf8 | DataType::LargeUtf8 => 6,
+        _ => 0,
+    }
+}
+
+fn arrow_value_at(py: Python<'_>, arr: &dyn Array, idx: usize) -> PyResult<PyObject> {
+    if arr.is_null(idx) {
+        return Ok(py.None());
+    }
+    macro_rules! downcast {
+        ($T:ty, $getter:ident) => {
+            if let Some(a) = arr.as_any().downcast_ref::<$T>() {
+                let v = a.$getter(idx);
+                return Ok(v.into_py(py));
+            }
+        };
+    }
+    // integers
+    downcast!(Int8Array, value);
+    downcast!(Int16Array, value);
+    downcast!(Int32Array, value);
+    downcast!(Int64Array, value);
+    downcast!(UInt8Array, value);
+    downcast!(UInt16Array, value);
+    downcast!(UInt32Array, value);
+    downcast!(UInt64Array, value);
+    // floats
+    downcast!(Float32Array, value);
+    downcast!(Float64Array, value);
+    // bool
+    downcast!(BooleanArray, value);
+    // utf8
+    if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
+        return Ok(a.value(idx).to_string().into_py(py));
+    }
+    if let Some(a) = arr.as_any().downcast_ref::<LargeStringArray>() {
+        return Ok(a.value(idx).to_string().into_py(py));
+    }
+    // fallback: debug
+    Ok(format!("{:?}", format!("{:?}", arr)).into_py(py))
+}
+
+fn record_batch_row_to_py_tuple(py: Python<'_>, batch: &RecordBatch, row: usize) -> PyResult<PyObject> {
+    let mut vals: Vec<PyObject> = Vec::with_capacity(batch.num_columns());
+    for col in 0..batch.num_columns() {
+        let arr = batch.column(col).as_ref();
+        vals.push(arrow_value_at(py, arr, row)?);
+    }
+    Ok(PyTuple::new(py, vals).into())
+}
+
+#[pyclass]
+pub struct DFConnection {
+    rt: Arc<Runtime>,
+    ctx: SessionContext,
+}
+
+#[pyclass]
+pub struct DFCursor {
+    rt: Arc<Runtime>,
+    ctx: SessionContext,
+    last_batches: Vec<RecordBatch>,
+    rowcount: isize,
+    pos: usize,
+    // (name, type_code)
+    desc_simple: Option<Vec<(String, i32)>>,
+}
+
+#[pymethods]
+impl DFConnection {
+    /// Return a new cursor (independent iterator over results).
+    fn cursor(&self) -> PyResult<DFCursor> {
+        Ok(DFCursor {
+            rt: Arc::clone(&self.rt),
+            ctx: self.ctx.clone(),
+            last_batches: vec![],
+            rowcount: -1,
+            pos: 0,
+            desc_simple: None,
+        })
+    }
+
+    /// No-op for DB-API compliance.
+    fn commit(&self) -> PyResult<()> { Ok(()) }
+    fn rollback(&self) -> PyResult<()> { Ok(()) }
+    fn close(&self) -> PyResult<()> { Ok(()) }
+
+    /// Convenience helper: register a Parquet file as a table.
+    fn register_parquet(&self, table: &str, path: &str) -> PyResult<()> {
+        let ctx = self.ctx.clone();
+        self.rt.block_on(async move {
+            ctx.register_parquet(table, path, ParquetReadOptions::default())
+                .await
+                .map_err(to_pyerr)
+        })
+    }
+
+    /// Convenience helper: register a CSV file as a table.
+    fn register_csv(&self, table: &str, path: &str, has_header: Option<bool>) -> PyResult<()> {
+        let ctx = self.ctx.clone();
+        let opts = CsvReadOptions::default().has_header(has_header.unwrap_or(true));
+        self.rt.block_on(async move {
+            ctx.register_csv(table, path, opts)
+               .await
+               .map_err(to_pyerr)
+        })
+    }
+}
+
+#[pymethods]
+impl DFCursor {
+    /// DB-API .description: list of 7-tuples
+    #[getter]
+    fn description<'py>(&self, py: Python<'py>) -> PyResult<Option<Vec<&'py PyTuple>>> {
+        if let Some(desc) = &self.desc_simple {
+            let mut out = Vec::with_capacity(desc.len());
+            for (name, type_code) in desc {
+                out.push(PyTuple::new(py, vec![
+                    name.into_py(py),
+                    (*type_code).into_py(py),
+                    py.None(), py.None(), py.None(), py.None(), py.None(),
+                ]));
+            }
+            Ok(Some(out))
+        } else {
+            Ok(None)
+        }
+    }
+
+    #[getter]
+    fn rowcount(&self) -> PyResult<isize> { Ok(self.rowcount) }
+
+    fn close(&mut self) -> PyResult<()> { Ok(()) }
+
+    /// Execute a SQL string. (Parameter binding not supported.)
+    fn execute(&mut self, sql: &str, params: Option<Vec<PyObject>>) -> PyResult<()> {
+        if params.is_some() {
+            return Err(PyException::new_err("Parameter binding not supported; interpolate on caller side."));
+        }
+        let ctx = self.ctx.clone();
+        let (batches, schema) = self.rt.block_on(async move {
+            let df = ctx.sql(sql).await.map_err(to_pyerr)?;
+            let schema = df.schema().clone();
+            let batches = df.collect().await.map_err(to_pyerr)?;
+            Ok::<_, PyErr>((batches, schema))
+        })?;
+
+        self.desc_simple = Some(schema.fields().iter()
+            .map(|f| (f.name().clone(), arrow_dtype_to_dbapi_typecode(f.data_type())))
+            .collect());
+
+        self.rowcount = batches.iter().map(|b| b.num_rows() as isize).sum();
+        self.pos = 0;
+        self.last_batches = batches;
+        Ok(())
+    }
+
+    fn fetchone(&mut self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+        if let Some(row) = self.next_row(py)? { Ok(Some(row)) } else { Ok(None) }
+    }
+
+    fn fetchmany(&mut self, py: Python<'_>, size: Option<usize>) -> PyResult<Vec<PyObject>> {
+        let n = size.unwrap_or(1);
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
+            if let Some(row) = self.next_row(py)? { out.push(row); } else { break; }
+        }
+        Ok(out)
+    }
+
+    fn fetchall(&mut self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+        let mut out = Vec::new();
+        while let Some(row) = self.next_row(py)? { out.push(row); }
+        Ok(out)
+    }
+}
+
+impl DFCursor {
+    fn next_row(&mut self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+        let mut remaining = self.pos;
+        for batch in &self.last_batches {
+            if remaining < batch.num_rows() {
+                let row = record_batch_row_to_py_tuple(py, batch, remaining)?;
+                self.pos += 1;
+                return Ok(Some(row));
+            }
+            remaining -= batch.num_rows();
+        }
+        Ok(None)
+    }
+}
+
+#[pyfunction]
+fn connect() -> PyResult<DFConnection> {
+    let rt = Arc::new(Runtime::new().map_err(to_pyerr)?);
+    let ctx = SessionContext::new();
+    Ok(DFConnection { rt, ctx })
+}
+
+#[pymodule]
+fn datafusion_dbapi(py: Python, m: &PyModule) -> PyResult<()> {
+    // DB-API required module attributes
+    m.add("apilevel", "2.0")?;
+    m.add("threadsafety", 1)?; // 1: Threads may share the module
+    m.add("paramstyle", "qmark")?;
+
+    m.add_class::<DFConnection>()?;
+    m.add_class::<DFCursor>()?;
+    m.add_function(wrap_pyfunction!(connect, m)?)?;
+
+    // Expose helper aliases for Python-land convenience
+    // so users can do: import datafusion_dbapi as df; conn = df.connect(); conn.register_parquet(...)
+    Ok(())
+}
