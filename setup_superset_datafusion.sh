@@ -14,6 +14,9 @@ source .venv/bin/activate
 echo "Installing Superset..."
 cd superset
 git checkout -f 4.0.1
+
+make
+
 cd superset-frontend
 nvm use 23
 npm ci

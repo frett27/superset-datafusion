@@ -1,2 +1,7 @@
 flask-cors==6.0.1
 marshmallow==3.26.1
+
+Pillow 
+python-graphql-client 
+psycopg2-binary
+

@@ -63,6 +63,19 @@ CACHE_CONFIG = {
 # DataFusion specific settings
 DATA_FUSION_ALLOW_DML = True
 
+
+# Static assets configuration - Point to the frontend source assets
+STATICFILES_DIRS = [
+    os.path.join(os.path.dirname(__file__), 'superset/superset-frontend/src/assets')
+]
+STATIC_URL = '/static/'
+STATIC_ROOT = os.path.join(os.path.dirname(__file__), 'superset/superset/static')
+
+# Override the favicon path to point to the source assets
+FAVICONS = [{"href": "/static/images/favicon.png"}]
+APP_ICON = "/static/images/superset-logo-horiz.png"
+
+
 # Register custom DataFusion engine spec
 from superset_datafusion.engine_spec import DataFusionEngineSpec
 
