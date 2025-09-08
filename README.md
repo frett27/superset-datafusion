@@ -1,4 +1,4 @@
-# DataFusion connector for setupset
+# DataFusion connector for setupset (still incubating)
 
 This project permit to use Datafusion in superset
 Leveraging the usage of parquet file for graphing
