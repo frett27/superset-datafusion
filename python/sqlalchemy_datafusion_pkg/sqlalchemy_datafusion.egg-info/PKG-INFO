@@ -1,11 +1,8 @@
-Metadata-Version: 2.1
+Metadata-Version: 2.4
 Name: sqlalchemy-datafusion
 Version: 0.1.0
 Summary: SQLAlchemy dialect for Apache DataFusion
-Home-page: UNKNOWN
 Author: DataFusion Team
-License: UNKNOWN
-Platform: UNKNOWN
 Classifier: Development Status :: 3 - Alpha
 Classifier: Intended Audience :: Developers
 Classifier: License :: OSI Approved :: Apache Software License
@@ -16,6 +13,9 @@ Classifier: Programming Language :: Python :: 3.9
 Classifier: Programming Language :: Python :: 3.10
 Classifier: Programming Language :: Python :: 3.11
 Requires-Python: >=3.7
-
-UNKNOWN
-
+Requires-Dist: SQLAlchemy<2.0,>=1.4
+Dynamic: author
+Dynamic: classifier
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary

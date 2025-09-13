@@ -6,13 +6,21 @@ from superset.config import *
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'python'))
 
 # Import DataFusion SQLAlchemy dialect
-import sqlalchemy_datafusion
+try:
+    import sqlalchemy_datafusion
+    print("✅ SQLAlchemy DataFusion dialect imported successfully")
+except ImportError as e:
+    print(f"⚠️  Warning: Could not import sqlalchemy_datafusion: {e}")
 
 # Import DataFusion Superset engine specification
-import superset_datafusion
+try:
+    import superset_datafusion
+    print("✅ Superset DataFusion engine spec imported successfully")
+except ImportError as e:
+    print(f"⚠️  Warning: Could not import superset_datafusion: {e}")
 
 # MySQL database configuration (matching docker-compose.yml)
-SQLALCHEMY_DATABASE_URI = 'mysql+pymysql://superset:superset_password@localhost:3306/superset'
+SQLALCHEMY_DATABASE_URI = 'mysql+pymysql://superset:superset_password@mysql:3306/superset'
 
 # Security settings
 SECRET_KEY = 'coZB6ao6+oOmsRdzWyEq0ijGFvnc+dEbG/LHzAokl0FDymKa1Pe+3r2u'
@@ -63,7 +71,6 @@ CACHE_CONFIG = {
 # DataFusion specific settings
 DATA_FUSION_ALLOW_DML = True
 
-
 # Static assets configuration - Point to the frontend source assets
 STATICFILES_DIRS = [
     os.path.join(os.path.dirname(__file__), 'superset/superset-frontend/src/assets')
@@ -75,9 +82,12 @@ STATIC_ROOT = os.path.join(os.path.dirname(__file__), 'superset/superset/static'
 FAVICONS = [{"href": "/static/images/favicon.png"}]
 APP_ICON = "/static/images/superset-logo-horiz.png"
 
-
 # Register custom DataFusion engine spec
-from superset_datafusion.engine_spec import DataFusionEngineSpec
+try:
+    from superset_datafusion.engine_spec import DataFusionEngineSpec
+    print("✅ DataFusion engine spec imported successfully")
+except ImportError as e:
+    print(f"⚠️  Warning: Could not import DataFusion engine spec: {e}")
 
 # Add DataFusion to custom engine specs
 CUSTOM_SECURITY_MANAGER = None

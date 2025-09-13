@@ -1,9 +1,10 @@
-from setuptools import setup, find_packages
+from setuptools import setup
 
 setup(
     name="superset-datafusion",
     version="0.1.0",
-    packages=find_packages(),
+    packages=["superset_datafusion"],
+    package_dir={"superset_datafusion": "superset_datafusion"},
     install_requires=[
         "apache-superset",
         "datafusion-dbapi",

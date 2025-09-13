@@ -1,3 +1,2 @@
 [superset.db_engine_specs]
 datafusion = superset_datafusion.engine_spec:DataFusionEngineSpec
-
