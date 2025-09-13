@@ -10,6 +10,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 use tokio::runtime::Runtime;
 
+use std::collections::HashMap;
+use url::Url;
+
 fn to_pyerr<E: std::fmt::Display>(e: E) -> PyErr {
     PyException::new_err(e.to_string())
 }
@@ -232,53 +235,120 @@ impl DFCursor {
 }
 
 #[pyfunction]
-fn connect() -> PyResult<DFConnection> {
+fn connect(dsn: Option<&str>) -> PyResult<DFConnection> {
     log::debug!("Connecting to DataFusion");
     let rt = Arc::new(Runtime::new().map_err(to_pyerr)?);
     let config = SessionConfig::new().with_information_schema(true);
     let ctx = SessionContext::new_with_config(config);
     
-    // Auto-register data files
-    let data_dir = "/home/use/rsiotmonitor/superset_binding/datafusion-sqlalchemy";
+    // Parse connection parameters from DSN if provided
+    // this is the path to a sql datafusion path that defines the tables to be used
+    if let Some(dsn_str) = dsn {
+        log::debug!("DSN provided: {}", dsn_str);
+        let sql_file = parse_connection_url(dsn_str)?;
     
-    // Register CSV files
-    if let Ok(entries) = std::fs::read_dir(data_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if let Some(extension) = path.extension() {
-                if let Some(table_name) = path.file_stem() {
-                    if let Some(table_name_str) = table_name.to_str() {
-                        if extension == "csv" {
-                            log::debug!("registering csv file: {}", path.display());
-                            if let Some(path_str) = path.to_str() {
-                                let ctx_clone = ctx.clone();
-                                rt.block_on(async move {
-                                    let opts = CsvReadOptions::default().has_header(true);
-                                    ctx_clone.register_csv(table_name_str, path_str, opts).await
-                                }).ok();
-                            }
-                        } else if extension == "parquet" {
-                            log::debug!("registering parquet file: {}", path.display());
-                            if let Some(path_str) = path.to_str() {
-                                let ctx_clone = ctx.clone();
-                                rt.block_on(async move {
-                                    ctx_clone.register_parquet(table_name_str, path_str, ParquetReadOptions::default()).await
-                                }).ok();
-                            }
-                        }
-                    }
-                }
-            }
-        }
-       
+    
+        // Auto-register data files from the specified directory
+        log::debug!("Registering data files from SQL file: {}", sql_file);
+        register_data_files(&rt, &ctx, &sql_file)?;
+    
     }
     
-    Ok(DFConnection { rt, ctx, registered_tables: Arc::new(Mutex::new(HashSet::new())) })
+    Ok(DFConnection { 
+        rt, 
+        ctx, 
+        registered_tables: Arc::new(Mutex::new(HashSet::new())) 
+    })
+}
+
+/// Parse connection URL and extract parameters
+fn parse_connection_url(dsn: &str) -> PyResult<String> {
+    log::debug!("Parsing connection URL: {}", dsn);
+    
+    let trimmed = dsn.trim();
+    if trimmed.is_empty() {
+        return Err(PyException::new_err("Connection string cannot be empty"));
+    }
+    
+    // Try to parse as a full URL first
+    if let Ok(url) = Url::parse(trimmed) {
+        // If it's a datafusion:// URL, extract the path
+        if url.scheme() == "datafusion" {
+            let database = url.path().trim_start_matches('/');
+            if database.is_empty() {
+                return Err(PyException::new_err("Database path is required in connection URL"));
+            }
+            
+            // URL decode the path
+            let decoded_path = urlencoding::decode(database)
+                .map_err(|e| PyException::new_err(format!("Failed to decode URL path: {}", e)))?;
+            
+            // Parse query parameters for additional configuration
+            let mut params = HashMap::new();
+            for (key, value) in url.query_pairs() {
+                params.insert(key.to_string(), value.to_string());
+            }
+            
+            log::debug!("Connection URL parsed - Database: {}", decoded_path);
+            if !params.is_empty() {
+                log::debug!("Query parameters: {:?}", params);
+            }
+            
+            return Ok(decoded_path.to_string());
+        } else {
+            // Wrong scheme - treat as file path
+            log::debug!("Wrong scheme '{}', treating as file path: {}", url.scheme(), trimmed);
+            return Ok(trimmed.to_string());
+        }
+    }
+    
+    // If URL parsing fails, treat the entire string as a file path
+    log::debug!("URL parsing failed, treating as file path: {}", trimmed);
+    Ok(trimmed.to_string())
+}
+
+/// Register data files and prepare context from SQL file
+fn register_data_files(rt: &Arc<Runtime>, ctx: &SessionContext, sql_file: &str) -> PyResult<()> {
+    log::debug!("Reading SQL file: {}", sql_file);
+    
+    // Read the SQL file content
+    let sql_content = std::fs::read_to_string(sql_file)
+        .map_err(|e| PyException::new_err(format!("Failed to read SQL file '{}': {}", sql_file, e)))?;
+    
+    // Split SQL content into individual statements
+    let statements: Vec<&str> = sql_content
+        .split(';')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    
+    log::debug!("Found {} SQL statements to execute", statements.len());
+    
+    // Execute each SQL statement
+    for (i, statement) in statements.iter().enumerate() {
+        if statement.is_empty() {
+            continue;
+        }
+        
+        log::info!("Executing statement {}: {}", i + 1, statement);
+        
+        let ctx_clone = ctx.clone();
+        rt.block_on(async move {
+            // Execute the SQL statement
+            ctx_clone.sql(statement).await
+        }).map_err(|e| PyException::new_err(format!("Failed to execute SQL statement {}: {}", i + 1, e)))?;
+        
+        log::debug!("Successfully executed statement {}", i + 1);
+    }
+    
+    log::debug!("Successfully prepared DataFusion context from SQL file");
+    Ok(())
 }
 
 #[pymodule]
 fn datafusion_dbapi(py: Python, m: &PyModule) -> PyResult<()> {
-    env_logger::builder().filter_level(log::LevelFilter::Debug).try_init();
+
+    let _ = env_logger::builder().filter_level(log::LevelFilter::Info).try_init();
     log::debug!("Initializing datafusion_dbapi module");
     // DB-API required module attributes
     m.add("apilevel", "2.0")?;
@@ -289,7 +359,7 @@ fn datafusion_dbapi(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<DFCursor>()?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
 
-    // DB-API Error classes
+    // DB-API Error classes - properly inheriting from BaseException
     m.add_class::<Error>()?;
     m.add_class::<Warning>()?;
     m.add_class::<InterfaceError>()?;
@@ -306,8 +376,8 @@ fn datafusion_dbapi(py: Python, m: &PyModule) -> PyResult<()> {
     Ok(())
 }
 
-// DB-API 2.0 Error classes
-#[pyclass]
+// DB-API 2.0 Error classes - properly inheriting from BaseException
+#[pyclass(extends=PyException)]
 pub struct Error {
     message: String,
 }
@@ -315,12 +385,12 @@ pub struct Error {
 #[pymethods]
 impl Error {
     #[new]
-    fn new(message: String) -> Self {
-        Self { message }
+    fn new(message: String) -> PyResult<Self> {
+        Ok(Self { message })
     }
 }
 
-#[pyclass]
+#[pyclass(extends=PyException)]
 pub struct Warning {
     message: String,
 }
@@ -328,12 +398,12 @@ pub struct Warning {
 #[pymethods]
 impl Warning {
     #[new]
-    fn new(message: String) -> Self {
-        Self { message }
+    fn new(message: String) -> PyResult<Self> {
+        Ok(Self { message })
     }
 }
 
-#[pyclass]
+#[pyclass(extends=PyException)]
 pub struct InterfaceError {
     message: String,
 }
@@ -341,12 +411,12 @@ pub struct InterfaceError {
 #[pymethods]
 impl InterfaceError {
     #[new]
-    fn new(message: String) -> Self {
-        Self { message }
+    fn new(message: String) -> PyResult<Self> {
+        Ok(Self { message })
     }
 }
 
-#[pyclass]
+#[pyclass(extends=PyException)]
 pub struct DatabaseError {
     message: String,
 }
@@ -354,12 +424,12 @@ pub struct DatabaseError {
 #[pymethods]
 impl DatabaseError {
     #[new]
-    fn new(message: String) -> Self {
-        Self { message }
+    fn new(message: String) -> PyResult<Self> {
+        Ok(Self { message })
     }
 }
 
-#[pyclass]
+#[pyclass(extends=PyException)]
 pub struct DataError {
     message: String,
 }
@@ -367,12 +437,12 @@ pub struct DataError {
 #[pymethods]
 impl DataError {
     #[new]
-    fn new(message: String) -> Self {
-        Self { message }
+    fn new(message: String) -> PyResult<Self> {
+        Ok(Self { message })
     }
 }
 
-#[pyclass]
+#[pyclass(extends=PyException)]
 pub struct OperationalError {
     message: String,
 }
@@ -380,12 +450,12 @@ pub struct OperationalError {
 #[pymethods]
 impl OperationalError {
     #[new]
-    fn new(message: String) -> Self {
-        Self { message }
+    fn new(message: String) -> PyResult<Self> {
+        Ok(Self { message })
     }
 }
 
-#[pyclass]
+#[pyclass(extends=PyException)]
 pub struct IntegrityError {
     message: String,
 }
@@ -393,12 +463,12 @@ pub struct IntegrityError {
 #[pymethods]
 impl IntegrityError {
     #[new]
-    fn new(message: String) -> Self {
-        Self { message }
+    fn new(message: String) -> PyResult<Self> {
+        Ok(Self { message })
     }
 }
 
-#[pyclass]
+#[pyclass(extends=PyException)]
 pub struct InternalError {
     message: String,
 }
@@ -406,12 +476,12 @@ pub struct InternalError {
 #[pymethods]
 impl InternalError {
     #[new]
-    fn new(message: String) -> Self {
-        Self { message }
+    fn new(message: String) -> PyResult<Self> {
+        Ok(Self { message })
     }
 }
 
-#[pyclass]
+#[pyclass(extends=PyException)]
 pub struct ProgrammingError {
     message: String,
 }
@@ -419,12 +489,12 @@ pub struct ProgrammingError {
 #[pymethods]
 impl ProgrammingError {
     #[new]
-    fn new(message: String) -> Self {
-        Self { message }
+    fn new(message: String) -> PyResult<Self> {
+        Ok(Self { message })
     }
 }
 
-#[pyclass]
+#[pyclass(extends=PyException)]
 pub struct NotSupportedError {
     message: String,
 }
@@ -432,7 +502,118 @@ pub struct NotSupportedError {
 #[pymethods]
 impl NotSupportedError {
     #[new]
-    fn new(message: String) -> Self {
-        Self { message }
+    fn new(message: String) -> PyResult<Self> {
+        Ok(Self { message })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use url::Url;
+
+    // Helper function to test URL parsing without Python runtime
+    fn test_url_parsing(input: &str) -> Result<String, String> {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return Err("Connection string cannot be empty".to_string());
+        }
+        
+        // Try to parse as a full URL first
+        if let Ok(url) = Url::parse(trimmed) {
+            // If it's a datafusion:// URL, extract the path
+            if url.scheme() == "datafusion" {
+                let database = url.path().trim_start_matches('/');
+                if database.is_empty() {
+                    return Err("Database path is required in connection URL".to_string());
+                }
+                // URL decode the path
+                let decoded_path = urlencoding::decode(database)
+                    .map_err(|e| format!("Failed to decode URL path: {}", e))?;
+                return Ok(decoded_path.to_string());
+            } else {
+                // Wrong scheme - treat as file path
+                return Ok(trimmed.to_string());
+            }
+        }
+        
+        // If URL parsing fails, treat the entire string as a file path
+        Ok(trimmed.to_string())
+    }
+
+    #[test]
+    fn test_valid_datafusion_urls() {
+        // Valid datafusion:// URLs
+        assert_eq!(test_url_parsing("datafusion://localhost/path/to/data").unwrap(), "path/to/data");
+        assert_eq!(test_url_parsing("datafusion://user:pass@host:8080/database").unwrap(), "database");
+        assert_eq!(test_url_parsing("datafusion:///absolute/path").unwrap(), "absolute/path");
+        assert_eq!(test_url_parsing("datafusion://host/db?param=value").unwrap(), "db");
+        assert_eq!(test_url_parsing("datafusion://localhost:5432/my_database?timeout=30&retries=3").unwrap(), "my_database");
+    }
+
+    #[test]
+    fn test_invalid_datafusion_urls() {
+        // Invalid datafusion:// URLs
+        assert!(test_url_parsing("datafusion://").is_err());
+        assert!(test_url_parsing("datafusion://localhost").is_err());
+        assert!(test_url_parsing("datafusion://localhost/").is_err());
+    }
+
+    #[test]
+    fn test_wrong_scheme_urls() {
+        // URLs with wrong schemes should be treated as file paths
+        assert_eq!(test_url_parsing("postgresql://localhost/db").unwrap(), "postgresql://localhost/db");
+        assert_eq!(test_url_parsing("mysql://user:pass@host/db").unwrap(), "mysql://user:pass@host/db");
+        assert_eq!(test_url_parsing("http://example.com/path").unwrap(), "http://example.com/path");
+    }
+
+    #[test]
+    fn test_file_paths() {
+        // File paths (should be treated as file paths, not URLs)
+        assert_eq!(test_url_parsing("/absolute/path/to/file.sql").unwrap(), "/absolute/path/to/file.sql");
+        assert_eq!(test_url_parsing("./relative/path.sql").unwrap(), "./relative/path.sql");
+        assert_eq!(test_url_parsing("../parent/path.sql").unwrap(), "../parent/path.sql");
+        assert_eq!(test_url_parsing("file.sql").unwrap(), "file.sql");
+        assert_eq!(test_url_parsing("data/setup.sql").unwrap(), "data/setup.sql");
+    }
+
+    #[test]
+    fn test_edge_cases() {
+        // Edge cases
+        assert!(test_url_parsing("").is_err());
+        assert!(test_url_parsing("   ").is_err());
+        assert_eq!(test_url_parsing("datafusion://host/path with spaces").unwrap(), "path with spaces");
+        assert_eq!(test_url_parsing("datafusion://host/path%20with%20encoding").unwrap(), "path with encoding");
+    }
+
+    #[test]
+    fn test_malformed_urls() {
+        // Malformed URLs that should be treated as file paths
+        assert_eq!(test_url_parsing("not-a-url").unwrap(), "not-a-url");
+        assert_eq!(test_url_parsing("://invalid").unwrap(), "://invalid");
+        assert!(test_url_parsing("datafusion://").is_err());
+    }
+
+    #[test]
+    fn test_query_parameters() {
+        // Test that query parameters are parsed but don't affect the path
+        let result = test_url_parsing("datafusion://host/database?param1=value1&param2=value2");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "database");
+    }
+
+    #[test]
+    fn test_url_parsing_edge_cases() {
+        // Test specific edge cases that might cause issues
+        assert_eq!(test_url_parsing("datafusion://host/path").unwrap(), "path");
+        assert_eq!(test_url_parsing("datafusion://host/path/").unwrap(), "path/");
+        assert_eq!(test_url_parsing("datafusion://host/path/subpath").unwrap(), "path/subpath");
+        
+        // Test with special characters
+        assert_eq!(test_url_parsing("datafusion://host/path-with-dashes").unwrap(), "path-with-dashes");
+        assert_eq!(test_url_parsing("datafusion://host/path_with_underscores").unwrap(), "path_with_underscores");
+        assert_eq!(test_url_parsing("datafusion://host/path.with.dots").unwrap(), "path.with.dots");
+    }
+}
+
+

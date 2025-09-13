@@ -2,6 +2,7 @@ from sqlalchemy.engine.default import DefaultDialect
 from sqlalchemy import types as sqltypes
 import datafusion_dbapi as dfapi
 import os
+from urllib.parse import urlparse, parse_qs
 
 class DataFusionDialect(DefaultDialect):
     name = "datafusion"
@@ -13,11 +14,30 @@ class DataFusionDialect(DefaultDialect):
         return dfapi
 
     def create_connect_args(self, url):
-        return ([], {})
+        """Parse connection URL and return connection arguments"""
+        # Extract the database path from the URL
+        # Format: datafusion://[user:password@]host[:port]/database[?param=value&param=value]
+        parsed = urlparse(str(url))
+        
+        # The database path is the path component
+        database_path = parsed.path.lstrip('/')
+        
+        # Parse query parameters
+        query_params = parse_qs(parsed.query)
+        
+        # Convert single-element lists to single values
+        params = {k: v[0] if len(v) == 1 else v for k, v in query_params.items()}
+        
+        # Return the database path as the DSN for the DB-API connect function
+        return ([database_path], {})
 
-    def do_connect(self, *cargs, **cparams):
-        # Create DataFusion connection
-        conn = dfapi.connect()
+    def do_connect(self, dsn=None, **cparams):
+        """Create DataFusion connection with optional DSN"""
+        # Pass the DSN to the connect function
+        if dsn:
+            conn = dfapi.connect(dsn)
+        else:
+            conn = dfapi.connect()
         
         return conn
 

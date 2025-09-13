@@ -69,3 +69,5 @@ echo "2. Click 'Connect a database'"
 echo "3. Select 'Other' as database type"
 echo "4. Use 'datafusion://' as the SQLAlchemy URI"
 echo "5. Click 'Test Connection' and then 'Connect'"
+
+
