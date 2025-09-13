@@ -29,7 +29,9 @@ services:
       mysql:
         condition: service_healthy
     volumes:
-      - ./data:/app/data  # Mount data directory for DataFusion files
+      - ./data:/app/data
+      - ./users.parquet:/app/users.parquet
+      - ./setup.sql:/app/setup.sql
       - ./init_superset.sh:/app/init_superset.sh
     restart: unless-stopped
     healthcheck:
@@ -38,20 +40,6 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
-
-  superset-init:
-    build: .
-    environment:
-      - SUPERSET_CONFIG_PATH=/app/superset_config_datafusion.py
-      - SQLALCHEMY_DATABASE_URI=mysql+pymysql://superset:superset_password@mysql:3306/superset
-    depends_on:
-      superset:
-        condition: service_healthy
-    volumes:
-      - ./data:/app/data
-      - ./init_superset.sh:/app/init_superset.sh
-    command: ["/app/init_superset.sh"]
-    restart: "no"
 
 volumes:
   mysql_data:
