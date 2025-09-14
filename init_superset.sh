@@ -3,6 +3,11 @@ set -e
 
 echo "🚀 Initializing Superset with DataFusion support..."
 
+# Start Superset web server in the background
+echo "🌐 Starting Superset web server..."
+superset run -h 0.0.0.0 -p 8088 &
+SUPERSET_PID=$!
+
 # Wait for Superset to be ready
 echo "⏳ Waiting for Superset to be ready..."
 max_attempts=30
@@ -19,6 +24,7 @@ done
 
 if [ $attempt -eq $max_attempts ]; then
   echo "❌ Superset failed to start within expected time"
+  kill $SUPERSET_PID 2>/dev/null || true
   exit 1
 fi
 
@@ -54,3 +60,7 @@ echo "   3. Test connection and explore the 'users' table"
 echo ""
 echo "🌐 Access Superset at: http://localhost:8088"
 echo "👤 Login with: admin / admin"
+
+# Keep Superset running
+echo "🔄 Keeping Superset running..."
+wait $SUPERSET_PID

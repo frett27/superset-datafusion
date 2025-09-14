@@ -40,6 +40,7 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+    command: ["bash", "/app/init_superset.sh"]
 
 volumes:
   mysql_data:

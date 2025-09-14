@@ -86,10 +86,44 @@ class DataFusionDialect(DefaultDialect):
             return []
 
     def get_view_names(self, connection, schema=None, **kw):
+
         """Return list of view names - DataFusion doesn't support views, so return empty list"""
         # DataFusion doesn't support views, so we return an empty list
         # This prevents the NotImplementedError that was causing the 422 error
-        return []
+        print("🔍 DataFusionDialect.get_view_names() called")
+        print(f"   Connection: {connection}")
+        print(f"   Schema: {schema}")
+        
+        print(f"   Keyword arguments: {kw}")
+
+        try:
+            # Get the raw DataFusion connection
+            raw_conn = connection.connection
+            if hasattr(raw_conn, 'connection'):
+                raw_conn = raw_conn.connection
+            
+            # Execute SHOW TABLES
+            cursor = raw_conn.cursor()
+            cursor.execute("SHOW TABLES")
+            results = cursor.fetchall()
+            
+            # Extract table names (SHOW TABLES returns: catalog, schema, table_name, table_type)
+            view_names = []
+            for row in results:
+                # ignore all rows that does not have the "public" table_schema (2nd column in the row)
+                if len(row) >= 3 and row[1] == "public":
+                    table_name = row[2]  # table_name is the 3rd column
+                    table_type = row[3] if len(row) > 3 else "VIEW"
+                    # Only include actual data tables, not system views
+                    if table_type == "VIEW":
+                        view_names.append(table_name)
+            
+            cursor.close()
+            return view_names
+            
+        except Exception as e:
+            return []
+
 
     def get_columns(self, connection, table_name, schema=None, **kw):
         """Return list of column information"""
